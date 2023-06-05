@@ -80,7 +80,33 @@ So now it became clearer what we had to do:
 Our thought process was of course a lot less straight forward than that during the CTF. But to spare you the pain, we 
 will now give you a short intro into the zip archive format:
 
+# Zip Intro title I guess
+
+So here it is, the part of the writeup you have all been waiting for: a lengthy introduction of which you will skip half, just to later read all of it again because you did not understand the exploit.<br>
+During the CTF, we used [this documentation](https://users.cs.jmu.edu/buchhofp/forensics/formats/pkzip.html) for details about the Zip archive structure, which already leaves out a lot of details that were not relevant for the challenge.
+
+The general Zip structure looks like this:<br>
+
+![Image](./assets/general-zip-structure.png "General Zip file structure")
+
+[Source](https://www.codeproject.com/KB/cs/remotezip/diagram1.png)
+
+A directory of all files, called _Central Directory_ (CD) is placed at the end (yes you read that right) of a ZIP file. This identifies what files are in the Zip and where there are located (it doesn't literally need to be at the end, but we'll come back to this later).<br>
+The CD consists of a _CD File Header_ for each file in the archive, that contains information like the _Filename_, _Compression Type_, _File Size_ and it's _Offset_ in the archive. <br>
+However, this is not the offset of the file content itself: the content is preceded by a _Local File Header_, which simply repeats most of the details already present in the CD file header.
+
+
+### Additional stuff (insert here or in exploit explanation):
+- Include images or details as needed (CD, LFH).
+
+- "As mentioned above, the Zip archive does not need to end in the CD. The standard allows for a _File comment_ of length up to 65535 bytes after the CD, which can contain almost arbitrary data."
+
+- Golang impl. ignored almost all fields of local file header.
+
+- Tricks used: filename uncompressed, arbitrary offset with local file attribute, pushing junk data into large filename of first zip.
+
 <TODO>
+Look at other images if they fit the style better.
 Important to mention:
 - Directory header (AT THE BOTTOM of the file!)
 - Member header
