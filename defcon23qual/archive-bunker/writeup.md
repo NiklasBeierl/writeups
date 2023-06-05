@@ -1,9 +1,10 @@
+# Archive-bunker at defcon 2023 qualifiers
 
 A web interface and something with uploading zips! 
 After long hours of waiting, `archive-bunker` finally presents the first web-challenge in the defcon qualifiers! So let's dive straight in and see what this thing does.
 
 
-# Exploration
+## Exploration
 
 We get website with some doomsday-paranoid advertising for storing your CI / CD artifacts in super-secur bunker. 
 We interact with the application through what looks like a military-grade rugged computer terminal with shitty control buttons.
@@ -37,19 +38,24 @@ It will create a `.tar` archive and again a zip archive **without** a filename e
 
 Did you catch it? It creates archives with a `name` and we can specify a `name` for our websocket command...
 
-# It's an InYection
+## It's an InYection
 So we control the `name` variable and the template for the CI job looks like this:
+```yaml
+job:
+  steps:
+    - use: archive
+      name: "{{.Name}}-{{.Commit}}-{{.Timestamp}}"
+      artifacts:
+        - "bunker-expansion-plan.txt"
+        - "new-layer-blueprint.txt"
 ```
-# Todo 
-```
-with our specially crafted `name`, it may turn into something like this:
-```
-# Todo, with injected name
-```
-One limitation we have here, is that we can only include files into our archive that are inside the `/project` directory. This is again specified in the config file via the `root` setting. 
+with our specially crafted `name` turns it into this:
+![Inected YAML](./assets/InYection.png)
+
+One big limitation we have here, is that we can only include files into our archive that are inside the `/project` directory. This is again specified in the config file via the `root` setting. 
 The good news is that `flag.txt` is in this `/project` directory and that the CI job will create a `.tar` archive (which has no compression) and a zip archive in the `/data` directory.
 The bad news is that the zip archive will be created with `compress_files`, which applies the "censorship" mechanism described earlier. 
-And you might remember that the download command will always and only look at zip archives...
+And you might remember that the download command will always and only look at zip archives.
 
 So we have a mechanism to get the flag into a tar file in `/data`, but how do we get it out of there?
 
@@ -61,7 +67,7 @@ We spent a lot of time pocking around for path traversals in the archive process
 
 We didn't find anything like that, but suddenly we discovered that the loathed `compress_files` function did have a bug: 
 
-It didn't check whether the file it was writing an archive to already existed! So it would overwrite existing files. 
+It doesn't check whether the file it was writing the archive to already exists! So it would overwrite existing files. 
 Notice that it will overwrite not replace: If the original file is larger than the zip file, the "bottom" contents of 
 the original will not be erased! Additionally, we can use this to write into the tar created by the InYection by using 
 `filename.tar.zip` as the filename, since only the `.zip` extension will be stripped!
@@ -85,17 +91,14 @@ Important to mention:
 </TODO>
 
 # Zip! Y u so nasty??? 
-The keen reader might have observed that the format allows for some nasty ambiguities: Some header fields, like 
-cksum and compression method are in the directory header AND member header, so which one takes precedence? 
-We just checked the go implementation and it seems like it will only consider the values in the directory header for 
-all fields, except for `extra-field-length`, which makes a lot of sense, since ignoring extra fields in the member 
-header might otherwise cause an invalid read. This field is also a key part of our exploit: By setting the value very 
-high, we can make the go zip reader read "below" the contents of our actual zip file -> meaning the old contents of the 
-tar archive -> meaning the flag!
+The keen reader might have observed that the format allows for some nasty ambiguities: Some header fields, like `cksum` and `compression` are in the directory header AND member header, so which one takes precedence? 
+We checked the go implementation and it seems like it will always use the value in the directory header for
+all fields, except `extra-field-length`. This field is also a key part of our exploit: By setting the value very 
+high, we can make the go zip reader read "below" the contents of our actual zip file -> i.e. the contents of the tar archive -> the flag!
 
 Easy! Right? No. The trouble is that we can not control the zip metadata that `compress_files` will write. It will just 
 open the provided archive and copy the members into a new zip archive with defaults for compression, 
-extra-field-length, etc. In addition: The `download` function will panic and give us an empty file if the go zip reader 
+extra-field-length, etc. In addition: The `download` function give us an empty file if the go zip reader 
 encounters anything it doesn't like, for example invalid checksums or broken directory headers. 
 
 But truth be told, we do control one of the header fields: The member name! After a lot of head scratching our refined 
