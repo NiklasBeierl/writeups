@@ -2,7 +2,7 @@
 
 A web interface and something with uploading zips! 
 After long hours of waiting, `archive-bunker` finally presents the first web-challenge in the defcon qualifiers! So let's dive straight in and see what this thing does.
-
+Link to [challenge](https://github.com/Nautilus-Institute/quals-2023/tree/main/artifact-bunker) (with Dockerfile!) 
 
 ## Exploration
 
