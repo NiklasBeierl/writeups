@@ -94,8 +94,8 @@ The general Zip structure looks like this:<br>
 A directory of all files, called _Central Directory_ (CD) is placed at the end (yes you read that right) of a ZIP file. This identifies what files are in the Zip and where there are located (it doesn't literally need to be at the end, but we'll come back to this later).<br>
 The CD consists of a _CD File Header_ for each file in the archive, that contains multiple fields, among them:
 - _Member Name_ along with _Member Name Length_: Uncompressed, arbitrary data of max legnth of 2^16 bytes
-- _Compression Method_: can be uncompressed
-- _CheckSum_: if this is 0, the checksum is ignored
+- _Compression Method_: may be uncompressed (`0`)
+- _CheckSum_: if this is `0`, the checksum is ignored
 - _Member Size_
 - _Extra Field Length_: extra data after the _Member Name_, max length of 2^16 bytes
 - _Offset_
@@ -135,7 +135,8 @@ exploit plan looks like this:
    - Does not break the headers in a way that upsets the go zip reader 
 3. Download the flag from our crafted zip.
 
-![DefCon ctf Web Challenges](./assets/meme-web.png)
+![DefCon ctf Web Challenges](./assets/web-challenge-meme.jpg)
+
 
 
 
