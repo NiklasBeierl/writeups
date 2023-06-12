@@ -6,7 +6,7 @@ Link to [challenge](https://github.com/Nautilus-Institute/quals-2023/tree/main/a
 
 ## Exploration
 
-We get website with some doomsday-paranoid advertising for storing your CI / CD artifacts in super-secur bunker. 
+We get website with some doomsday-paranoid advertising for storing your CI / CD artifacts in a super-secure bunker. 
 We interact with the application through what looks like a military-grade rugged computer terminal with shitty control buttons.
 We can upload `zip` or `tar` archives by drag'n'dropping them into the screen and then we can browse the uploaded archives and see the contents of the contained files.
 We can also hit a mysterious `prep-artifacts` button that will make a `app-main--<timestamp>` archive appear, containing some weird text files.
@@ -33,8 +33,7 @@ The third important command is the `job` command, which only supports one subcom
 You can also pass an arbitrary `name` for the package-job.
 Under the hood, this feature is massively over-engineered:
 In the spirit of CI-Tools the actual input is a yaml file that describes `steps` (archives) of a certain `name` that contain certain files.
-The go server will prepare that yaml by applying some variables to a template file (included in the source) with go-langs [templating engine](todo: link) which is similar to jinja or django templating for the web folks reading this.
-It will create a `.tar` archive and again a zip archive **without** a filename extension for every `step`.
+The go server will prepare that yaml by applying some variables to a template file (included in the source) with go-langs templating engine which is similar to jinja or django templating for the web folks reading this. For every `step` it will create a `.tar` archive and again a zip archive **without** an extension.
 
 Did you catch it? It creates archives with a `name` and we can specify a `name` for our websocket command...
 
@@ -49,26 +48,25 @@ job:
         - "bunker-expansion-plan.txt"
         - "new-layer-blueprint.txt"
 ```
-with our specially crafted `name` turns it into this:
+With our specially crafted `name` it turns into this:
 ![Inected YAML](./assets/InYection.png)
 
-One big limitation we have here, is that we can only include files into our archive that are inside the `/project` directory. This is again specified in the config file via the `root` setting. 
-The good news is that `flag.txt` is in this `/project` directory and that the CI job will create a `.tar` archive (which has no compression) and a zip archive in the `/data` directory.
+One big limitation we have here, is that we can only include "artifacts" that are inside the `/project` directory. This is again specified in the config file via the `root` setting. 
+The good news is that `flag.txt` is in this `/project` directory and that the CI job will create a `.tar` archive and a zip archive in the `/data` directory.
+Note that `.tar` doesn't have any compression.
 The bad news is that the zip archive will be created with `compress_files`, which applies the "censorship" mechanism described earlier. 
 And you might remember that the download command will always and only look at zip archives.
 
-So we have a mechanism to get the flag into a tar file in `/data`, but how do we get it out of there?
-
-<10 Hours later>
+So we have a mechanism to get the plaintext flag into a tar file in `/data`, but how do we get it out of there?
 
 # There is an overwrite
 
-We spent a lot of time pocking around for path traversals in the archive processing logic this is a web-challenge, right? RIGHT?
+We spent a lot of time pocking around for path traversals in the archive processing logic, because after all: This is a web-challenge, right? RIGHT?
 
 We didn't find anything like that, but suddenly we discovered that the loathed `compress_files` function did have a bug: 
 
 It doesn't check whether the file it was writing the archive to already exists! So it would overwrite existing files. 
-Notice that it will overwrite not replace: If the original file is larger than the zip file, the "bottom" contents of 
+Notice that it will _overwrite_ not _replace_: If the preexisting file is larger than the new zip file, the "bottom" contents of 
 the original will not be erased! Additionally, we can use this to write into the tar created by the InYection by using 
 `filename.tar.zip` as the filename, since only the `.zip` extension will be stripped!
 
@@ -94,13 +92,14 @@ The general Zip structure looks like this:<br>
 A directory of all files, called _Central Directory_ (CD) is placed at the end (yes you read that right) of a ZIP file. This identifies what files are in the Zip and where there are located (it doesn't literally need to be at the end, but we'll come back to this later).<br>
 The CD consists of a _CD File Header_ for each file in the archive, that contains multiple fields, among them:
 - `file-name-len` and `file-name`: Name of a member: *Uncompressed and arbitrary*, max 2^16 bytes 
-- `compression`: May be no compression (`0`)
+- `compression`: May also be "no compression" (`0`)
 - `crc-32`: if this is `0`, the checksum is ignored
 - `compressed-size`
 - `extra-filed-length`: extra data after the `file-name`, max 2^16 bytes
 - `offset`: This is not the offset of the file content itself: the content is preceded by a _Local File Header_, which simply repeats most of the details already present in the central directory.
 
 As mentioned above, the Zip archive does not need to end in the CD. The standard allows for a _File comment_ of length up to 65535 bytes after the CD, which can contain arbitrary data.
+(Flags for example).
 
 # Zip! Y u so nasty??? 
 The keen reader might have observed that the format allows for some nasty ambiguities: Some header fields, like `crc-32` and `compression` are in the directory header AND member header, so which one takes precedence? 
@@ -108,8 +107,8 @@ We checked the go implementation. It seems like it will always use the value in 
 
 The trouble is that we can not control the zip metadata that `compress_files` will write. It will just 
 open the provided archive and copy the members into a new zip archive with defaults for compression, 
-a proper crc, etc. In addition: The `download` function give us an empty file if the go zip reader 
-encounters anything it doesn't like, for example invalid checksums or data that doesn't properly decompress directory headers. 
+a proper crc, etc. In addition: The `download` function gives us an empty file if the go zip reader 
+encounters anything it doesn't like, for example invalid checksums or data that doesn't properly decompress. 
 
 But truth be told, we do control one of the header fields: The member name! After a lot of head scratching our refined 
 exploit plan looks like this:
@@ -118,33 +117,35 @@ exploit plan looks like this:
 2. Write a smaller `small.zip` into the tar, so we have a zip directory header
 3. Write an even smaller `tiny.zip` into the tar, with a member name that:
    - Contains a valid local header 
-   - Overrides the `member offset` to point to the member header mentioned above
-   - Overrides the `compression-method` and `crc` in the directory header to `0` 
+   - Overrides the `member offset` in the CD to point to the member header mentioned above
+   - Overrides the `compression-method` and `crc` in the CD to `0` 
    - Does not break the central directory in a way that upsets the go zip reader 
 3. Download the flag from our "crafted" zip
 
 ![DefCon ctf Web Challenges](./assets/web-challenge-meme.jpg)
 
-After we generate the tar and upload `small.zip`, we see a directory header in `manyflgs.tar` that looks like this.  The long sequences of `D`, `0`, `1` and `2` are the file names we used. Notice the `50 4B 05 06` in the second to last row of bytes, those mark the footer of the central directory.
+After we generate the tar and upload `small.zip`, we see a directory header in `manyflgs.tar` that looks like this.  The long sequences of `D`, `0`, `1` and `2` are the file names we used. Notice the `50 4B 05 06` in the second to last row of bytes, those are the magic bytes used to find the central directory.
 ![small-zip-directory](./assets/small-zip-directory.png).
 
 After uploading `tiny.zip` we see a new directory header in the file, which looks like below.
-Again notice `50 4B 05 06` marking footer of `tiny.zip`s central directory. And then there the very "strange" filename we chose this time. It starts with `{{AAA...` and has a bunch of null bytes in it. 
+Again notice `50 4B 05 06` at `0x187` marking `tiny.zip`s central directory. And then there the very "strange" 
+filename we chose this time. It starts with `{{AAA...` and has a bunch of null bytes in it. 
 Also: It overwrote some `D`s of the "old" directory.
 
 ![tiny-zip-directory](./assets/tiny-zip-directory.png).
 
-Now remember that the central directory is located the **end** of a zip file. That also means that a zip reader will search for the central directory end-to-start!
+Now remember that the central directory is located the **end** of a zip file. That also means that a zip reader will 
+search for the central directory end-to-start and discover the "old" magic bytes first!
 So the file will actually be interpreted like below. (No data changed, only the coloring.)
 
 ![small-zip-directory-overwritten](./assets/small-zip-directory-overwritten.png).
 
 And here we have annotated the most important bits. In order to not upset the go zip reader we made use of the `extra field lenght` to "hide" `tiny.zip`s central directory footer and some leftover `D`s.
 
-![small-zip-directory-overwritten-annotated](./assets/small-zip-directory-overwritten-annotated.png).
+![small-zip-directory-overwritten-annotated](./assets/small-zip-directory-overwritten-annotated.png)
 
-This is now a perfectly valid zip file with an uncompressed last member, starting at `0x159` and having size
-`0x0700`, which needless to say: Contains the flag. :) 
+This is now a perfectly valid zip file with an uncompressed last member. That members checksum is `0` (i.e. ignored), it 
+starts at `0x159` and has size `0x0700`. Needless to say: It contains (among other bytes) the flag. :) 
 
 # Exploit: 
 ```python
